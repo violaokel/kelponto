@@ -1,0 +1,6 @@
+{
+  "name": "Arraiá Fibra Forte - Controle de Ponto",
+  "description": "Sistema administrativo completo de controle de ponto para a equipe de cozinha durante o festival de São João Arraiá Fibra Forte.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,151 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700;900&family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  
+  --color-bento-bg: #FEF9EC;
+  --color-bento-navy: #003049;
+  --color-bento-yellow: #FFB703;
+  --color-bento-blue: #219EBC;
+  --color-bento-red: #D90429;
+  --color-bento-dark: #1D1B20;
+}
+
+@layer utilities {
+  .clip-flag {
+    clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 50% 80%, 0% 100%);
+  }
+}
+
+/* Custom scrollbar and aesthetics */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #219EBC;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #FFB703;
+}
+
+/* Printing Utilities & Media Layout overrides */
+@media print {
+  @page {
+    size: auto;
+    margin: 1.0cm !important;
+  }
+
+  /* Hide typical layout wrappers and UI control elements */
+  header,
+  footer,
+  nav,
+  aside,
+  .no-print,
+  button,
+  .btn,
+  .clip-flag,
+  input,
+  select,
+  textarea,
+  .absolute.top-5.right-5 {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  /* Hide all decorative absolute background lantern elements & flags to avoid overlap color blotches */
+  .absolute.top-0.left-0.w-full.h-full,
+  .pointer-events-none,
+  .bg-bento-yellow\/30,
+  .blur-\[130px\],
+  .blur-\[150px\],
+  .blur-\[180px\] {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  /* Force background color rendering and contrast */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Normalise page dimensions for a flat physical output */
+  body, html {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #1d1b20 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Make sure the main content is fully visible */
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  /* Flatten modal wrapper layers so they flow naturally without overlapping fixed borders */
+  .fixed.inset-0 {
+    position: static !important;
+    display: block !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    z-index: auto !important;
+    box-shadow: none !important;
+  }
+
+  .fixed.inset-0 > div {
+    position: static !important;
+    display: block !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Hide the rest of the calendar screen content during printable display */
+  .schedule-screen-content,
+  .report-screen-content {
+    display: none !important;
+  }
+
+  /* Make sure weekly printable panel expands to take full viewport styled cleanly */
+  .printable-week-card,
+  .printable-report-card {
+    display: block !important;
+    position: static !important;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    padding: 16px !important;
+    background-color: #ffffff !important;
+    color: #1d1b20 !important;
+    border: none !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+    overflow: visible !important;
+  }
+}
+
+
