@@ -12,6 +12,7 @@ interface ReportGeneratorProps {
 export default function ReportGenerator({ employees, records, schedules }: ReportGeneratorProps) {
   const [filterRole, setFilterRole] = useState<string>('');
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [expandedEmployeeId, setExpandedEmployeeId] = useState<string | null>(null);
   const selectedDate = 'geral'; // Static suffix for backup filenames
 
   // Extract unique roles for filters
@@ -66,6 +67,16 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
     actualTime: string;
   }
 
+  interface DailyLog {
+    date: string;
+    scheduledTime: string;
+    entrada: string;
+    saidaIntervalo: string;
+    retornoIntervalo: string;
+    saida: string;
+    hoursWorked: number;
+  }
+
   interface EmployeeSummary {
     employee: Employee;
     presentDaysCount: number;
@@ -74,6 +85,7 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
     delayCount: number;
     absenceCount: number;
     delays: DetailedDelay[];
+    dailyLogs: DailyLog[];
   }
 
   const activeEmployees = employees.filter(e => e.isActive && (filterRole === '' || e.role === filterRole));
@@ -81,7 +93,7 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
   const summaries: EmployeeSummary[] = activeEmployees.map(emp => {
     // Collect all records of this employee
     const empRecords = records.filter(r => r.employeeId === emp.id);
-    
+
     // Sort all records chronologically to build accurate shifts with midnight crossover
     const sortedRecs = [...empRecords].sort((a, b) => {
       const tsA = `${a.date}T${a.time}`;
@@ -89,31 +101,94 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
       return tsA.localeCompare(tsB);
     });
 
-    const hoursByDate: { [date: string]: number } = {};
-    const presentDates = new Set<string>();
-    let lastPunch: TimeRecord | null = null;
+    interface AssignedRecord {
+      record: TimeRecord;
+      assignedDate: string;
+    }
+
+    const assignedRecs: AssignedRecord[] = [];
+    let currentEntrada: TimeRecord | null = null;
 
     sortedRecs.forEach(rec => {
-      presentDates.add(rec.date);
-      
-      if (rec.type === 'Entrada' || rec.type === 'Retorno Intervalo') {
-        if (lastPunch) {
-          // Auto-close open punch with default 4 hours on its start date
-          hoursByDate[lastPunch.date] = (hoursByDate[lastPunch.date] || 0) + 4;
-        }
-        lastPunch = rec;
-      } else if (rec.type === 'Início Intervalo' || rec.type === 'Saída') {
-        if (lastPunch) {
-          const diffHours = calculateDateTimeDiff(lastPunch, rec);
-          hoursByDate[lastPunch.date] = (hoursByDate[lastPunch.date] || 0) + diffHours;
-          lastPunch = null;
+      let assignedDate = rec.date;
+
+      if (rec.type === 'Entrada') {
+        currentEntrada = rec;
+        assignedDate = rec.date;
+      } else {
+        if (currentEntrada) {
+          try {
+            const startObj = new Date(`${currentEntrada.date}T${currentEntrada.time}:00`);
+            const endObj = new Date(`${rec.date}T${rec.time}:00`);
+            const diffHours = (endObj.getTime() - startObj.getTime()) / (1000 * 60 * 60);
+
+            // If the punch is within a reasonable window (e.g., 20 hours) and positive
+            if (diffHours >= 0 && diffHours <= 20) {
+              assignedDate = currentEntrada.date;
+            } else {
+              currentEntrada = null;
+            }
+          } catch {
+            currentEntrada = null;
+          }
         }
       }
+
+      assignedRecs.push({
+        record: rec,
+        assignedDate
+      });
     });
 
-    if (lastPunch) {
-      hoursByDate[lastPunch.date] = (hoursByDate[lastPunch.date] || 0) + 4;
-    }
+    const presentDates = new Set<string>();
+    const recsByAssignedDate: { [date: string]: AssignedRecord[] } = {};
+
+    assignedRecs.forEach(ar => {
+      presentDates.add(ar.assignedDate);
+      if (!recsByAssignedDate[ar.assignedDate]) {
+        recsByAssignedDate[ar.assignedDate] = [];
+      }
+      recsByAssignedDate[ar.assignedDate].push(ar);
+    });
+
+    const hoursByDate: { [date: string]: number } = {};
+
+    Object.keys(recsByAssignedDate).forEach(dateStr => {
+      const dayAssigned = recsByAssignedDate[dateStr];
+      const entAr = dayAssigned.find(ar => ar.record.type === 'Entrada');
+      const iniAr = dayAssigned.find(ar => ar.record.type === 'Início Intervalo');
+      const retAr = dayAssigned.find(ar => ar.record.type === 'Retorno Intervalo');
+      const sdaAr = dayAssigned.find(ar => ar.record.type === 'Saída');
+
+      let dayHours = 0;
+
+      if (entAr && sdaAr) {
+        const entTime = new Date(`${entAr.record.date}T${entAr.record.time}:00`).getTime();
+        const sdaTime = new Date(`${sdaAr.record.date}T${sdaAr.record.time}:00`).getTime();
+        let diffMs = sdaTime - entTime;
+
+        if (iniAr && retAr) {
+          const iniTime = new Date(`${iniAr.record.date}T${iniAr.record.time}:00`).getTime();
+          const retTime = new Date(`${retAr.record.date}T${retAr.record.time}:00`).getTime();
+          if (retTime > iniTime && iniTime > entTime && sdaTime > retTime) {
+            const breakMs = retTime - iniTime;
+            diffMs -= breakMs;
+          }
+        }
+        dayHours = diffMs / (1000 * 60 * 60);
+      } else if (entAr && iniAr) {
+        const entTime = new Date(`${entAr.record.date}T${entAr.record.time}:00`).getTime();
+        const iniTime = new Date(`${iniAr.record.date}T${iniAr.record.time}:00`).getTime();
+        dayHours = (iniTime - entTime) / (1000 * 60 * 60);
+        if (retAr) {
+          dayHours += 4.0;
+        }
+      } else if (entAr) {
+        dayHours = 4.0;
+      }
+
+      hoursByDate[dateStr] = Math.max(0, parseFloat(dayHours.toFixed(2)));
+    });
 
     let totalHours = 0;
     let totalOvertime = 0;
@@ -225,6 +300,35 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
       }
     });
 
+    // Collect daily logs with scheduled and recorded times
+    const schedDates = schedules.filter(s => s.employeeIds.includes(emp.id)).map(s => s.date);
+    const recordDates = Object.keys(recsByAssignedDate);
+    const allUniqueDates = Array.from(new Set([...schedDates, ...recordDates])).sort();
+
+    const dailyLogs: DailyLog[] = allUniqueDates.map(dateStr => {
+      const daySchedule = schedules.find(s => s.date === dateStr && s.employeeIds.includes(emp.id));
+      const scheduledTime = daySchedule ? `${daySchedule.startTime} - ${daySchedule.endTime}` : 'Folga';
+      
+      const dayAssigned = recsByAssignedDate[dateStr] || [];
+      
+      const entrada = dayAssigned.find(ar => ar.record.type === 'Entrada')?.record.time || '--:--';
+      const saidaIntervalo = dayAssigned.find(ar => ar.record.type === 'Início Intervalo')?.record.time || '--:--';
+      const retornoIntervalo = dayAssigned.find(ar => ar.record.type === 'Retorno Intervalo')?.record.time || '--:--';
+      const saida = dayAssigned.find(ar => ar.record.type === 'Saída')?.record.time || '--:--';
+      
+      const dayWorkedHours = hoursByDate[dateStr] || 0;
+      
+      return {
+        date: dateStr,
+        scheduledTime,
+        entrada,
+        saidaIntervalo,
+        retornoIntervalo,
+        saida,
+        hoursWorked: parseFloat(dayWorkedHours.toFixed(1))
+      };
+    });
+
     return {
       employee: emp,
       presentDaysCount: presentDates.size,
@@ -232,7 +336,8 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
       overtimeHoursDecimal: parseFloat(totalOvertime.toFixed(1)),
       delayCount: detailedDelays.length,
       absenceCount: absences,
-      delays: detailedDelays
+      delays: detailedDelays,
+      dailyLogs
     };
   });
 
@@ -475,6 +580,65 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
       rowIndex++;
     });
 
+    // Draw Table Total Footer Row
+    const totalRowHeight = 8;
+    if (currentY + totalRowHeight > 185) {
+      doc.addPage();
+      currentY = 38;
+      drawTableHeadings(currentY);
+      currentY += 8;
+    }
+
+    doc.setFillColor(240, 240, 240);
+    doc.rect(15, currentY, 267, totalRowHeight, 'F');
+    
+    doc.setDrawColor(29, 27, 32);
+    doc.setLineWidth(0.4);
+    doc.line(15, currentY, 282, currentY);
+    doc.line(15, currentY + totalRowHeight, 282, currentY + totalRowHeight);
+
+    // Draw grid lines for footer row
+    doc.setDrawColor(210, 210, 210);
+    doc.line(70, currentY, 70, currentY + totalRowHeight);
+    doc.line(110, currentY, 110, currentY + totalRowHeight);
+    doc.line(130, currentY, 130, currentY + totalRowHeight);
+    doc.line(155, currentY, 155, currentY + totalRowHeight);
+    doc.line(180, currentY, 180, currentY + totalRowHeight);
+    doc.line(200, currentY, 200, currentY + totalRowHeight);
+    doc.line(247, currentY, 247, currentY + totalRowHeight);
+
+    doc.setTextColor(29, 27, 32);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.text('TOTAL CONSOLIDADO', 15 + 3, currentY + 5);
+
+    doc.text(`${summaries.reduce((acc, curr) => acc + curr.presentDaysCount, 0)}`, 110 + 10, currentY + 5, { align: 'center' });
+
+    // Total Hours
+    doc.setTextColor(34, 112, 147);
+    doc.text(`${totalHoursWorkedAll.toFixed(1)}h`, 130 + 12.5, currentY + 5, { align: 'center' });
+
+    // Total Overtime
+    doc.setTextColor(195, 74, 44);
+    doc.text(`${totalOvertimeAll.toFixed(1)}h`, 155 + 12.5, currentY + 5, { align: 'center' });
+
+    // Total delays
+    doc.setTextColor(195, 74, 44);
+    doc.text(`${totalDelaysAll}`, 180 + 10, currentY + 5, { align: 'center' });
+
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(6.5);
+    doc.setTextColor(120, 120, 120);
+    doc.text('Soma consolidada da equipe', 200 + 3, currentY + 5);
+
+    // Total absences
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(120, 120, 120);
+    doc.text(`${totalAbsencesAll}`, 247 + 10, currentY + 5, { align: 'center' });
+
+    currentY += totalRowHeight;
+
     // 3. Footer notes & Signatures block
     if (currentY + 25 > 195) {
       doc.addPage();
@@ -517,6 +681,173 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
     doc.setTextColor(130, 130, 130);
     doc.text('Controle de Ponto Cozinha - Arraia Fibra Forte', sigX + 45, finalNotesY + 15.5, { align: 'center' });
 
+    // 3.5. Generate Individual Official Timesheets for each employee on new pages (with exact hour punch details)
+    summaries.forEach((sum) => {
+      doc.addPage();
+      
+      let yy = 36;
+      
+      // A. Profile Box Header
+      doc.setFillColor(248, 246, 240); // Soft beige theme background
+      doc.setDrawColor(29, 27, 32);
+      doc.setLineWidth(0.4);
+      doc.rect(15, yy, 267, 18, 'FD');
+      
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(29, 27, 32);
+      doc.text(`FOLHA DE APURAÇÃO INDIVIDUAL: ${sum.employee.fullName.toUpperCase()}`, 15 + 4, yy + 5.5);
+      
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(80, 80, 80);
+      doc.text(`Função: ${sum.employee.role}`, 15 + 4, yy + 10);
+      doc.text(`Contato: ${sum.employee.phone || 'Sem contato'}`, 15 + 100, yy + 10);
+      doc.text(`Admissão: ${sum.employee.admissionDate?.split('-').reverse().join('/') || 'Sem cadastro'}`, 15 + 180, yy + 10);
+      
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.text(`Total de Horas Trabalhadas: ${sum.hoursWorkedDecimal.toFixed(1)}h`, 15 + 4, yy + 14.5);
+      doc.text(`Total de Horas Extras: ${sum.overtimeHoursDecimal.toFixed(1)}h`, 15 + 100, yy + 14.5);
+      doc.text(`Atrasos: ${sum.delayCount} ocorrência(s)`, 15 + 180, yy + 14.5);
+      
+      yy += 23; // Distance below profile header info
+      
+      // B. Table Daily Records Header
+      doc.setFillColor(240, 240, 240);
+      doc.rect(15, yy, 267, 7, 'F');
+      
+      doc.setDrawColor(29, 27, 32);
+      doc.setLineWidth(0.4);
+      doc.line(15, yy, 282, yy);
+      doc.line(15, yy + 7, 282, yy + 7);
+      
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(29, 27, 32);
+      
+      doc.text('DATA', 15 + 3, yy + 5);
+      doc.text('JORNADA PREVISTA', 45, yy + 5);
+      doc.text('ENTRADA (CHECK-IN)', 95, yy + 5);
+      doc.text('ALMOÇO INÍCIO', 135, yy + 5);
+      doc.text('ALMOÇO RETORNO', 175, yy + 5);
+      doc.text('SAÍDA (CHECK-OUT)', 215, yy + 5);
+      doc.text('TOTAL HORAS', 255, yy + 5);
+      
+      yy += 7;
+      
+      // C. List daily logs
+      sum.dailyLogs.forEach((log, lIdx) => {
+        // If we exceed printable table area (e.g. yy > 155), insert new page
+        if (yy > 155) {
+          doc.addPage();
+          yy = 36;
+          // Redraw Table Header
+          doc.setFillColor(240, 240, 240);
+          doc.rect(15, yy, 267, 7, 'F');
+          doc.setDrawColor(29, 27, 32);
+          doc.setLineWidth(0.4);
+          doc.line(15, yy, 282, yy);
+          doc.line(15, yy + 7, 282, yy + 7);
+          
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(7);
+          doc.setTextColor(29, 27, 32);
+          doc.text('DATA', 15 + 3, yy + 5);
+          doc.text('JORNADA PREVISTA', 45, yy + 5);
+          doc.text('ENTRADA', 95, yy + 5);
+          doc.text('ALMOÇO INÍCIO', 135, yy + 5);
+          doc.text('ALMOÇO RETORNO', 175, yy + 5);
+          doc.text('SAÍDA', 215, yy + 5);
+          doc.text('TOTAL HORAS', 255, yy + 5);
+          yy += 7;
+        }
+        
+        // Row background alternating
+        if (lIdx % 2 === 0) {
+          doc.setFillColor(252, 252, 252);
+        } else {
+          doc.setFillColor(255, 255, 255);
+        }
+        doc.rect(15, yy, 267, 6, 'F');
+        
+        // Split row borders
+        doc.setDrawColor(230, 230, 230);
+        doc.setLineWidth(0.15);
+        doc.line(15, yy + 6, 282, yy + 6);
+        
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(29, 27, 32);
+        
+        const dateFormatted = log.date.split('-').reverse().join('/');
+        doc.text(dateFormatted, 15 + 3, yy + 4.2);
+        doc.text(log.scheduledTime, 45, yy + 4.2);
+        
+        doc.setFont('helvetica', log.entrada !== '--:--' ? 'bold' : 'normal');
+        doc.text(log.entrada, 95, yy + 4.2);
+        doc.text(log.saidaIntervalo, 135, yy + 4.2);
+        doc.text(log.retornoIntervalo, 175, yy + 4.2);
+        doc.text(log.saida, 215, yy + 4.2);
+        
+        doc.setFont('helvetica', 'bold');
+        if (log.hoursWorked > 0) {
+          doc.setTextColor(34, 112, 147); // Blue
+          doc.text(`${log.hoursWorked.toFixed(1)}h`, 255, yy + 4.2);
+        } else {
+          doc.setTextColor(150, 150, 150);
+          doc.text('Folga/Aus.', 255, yy + 4.2);
+        }
+        
+        yy += 6;
+      });
+      
+      // Individual Summary Table Total Row
+      doc.setFillColor(242, 244, 246);
+      doc.rect(15, yy, 267, 6, 'F');
+      
+      doc.setDrawColor(29, 27, 32);
+      doc.setLineWidth(0.4);
+      doc.line(15, yy, 282, yy);
+      doc.line(15, yy + 6, 282, yy + 6);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(29, 27, 32);
+      doc.text('TOTAL DE HORAS TRABALHADAS ACUMULADO', 15 + 3, yy + 4.2);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(34, 112, 147); // Neat blue color for hour numbers
+      doc.text(`${sum.hoursWorkedDecimal.toFixed(1)}h`, 255, yy + 4.2);
+      
+      yy += 6;
+      
+      const sigBlockY = Math.max(yy + 8, 160); // Align perfectly near bottom (before border line at 195)
+      
+      doc.setDrawColor(29, 27, 32);
+      doc.setLineWidth(0.35);
+      doc.line(15, sigBlockY - 2, 282, sigBlockY - 2);
+      
+      // Dec statement
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(5.5);
+      doc.setTextColor(110, 110, 110);
+      const declaration = "Declaro para os devidos fins legais que as marcacoes de entrada, intervalo e saida registradas acima refletem com exatidao e fidelidade as horas trabalhadas.";
+      doc.text(declaration, 15 + 3, sigBlockY + 2);
+      
+      // Signature lines
+      const lineY = sigBlockY + 12;
+      doc.setLineWidth(0.4);
+      doc.line(20, lineY, 110, lineY);
+      doc.line(170, lineY, 260, lineY);
+      
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(29, 27, 32);
+      doc.text(`ASSINATURA DE: ${sum.employee.fullName.toUpperCase()}`, 65, lineY + 3.5, { align: 'center' });
+      doc.text('ASSINATURA DA CHEFE DO SETOR', 215, lineY + 3.5, { align: 'center' });
+    });
+
     // 4. SECOND-PASS: Draw Borders and Headers for all pages with exact total count
     const totalPages = doc.getNumberOfPages();
     for (let i = 1; i <= totalPages; i++) {
@@ -547,7 +878,7 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(100, 100, 100);
-      doc.text('Relatório Consolidado de Frequência, Escalas e Intercorrências de Cozinha (São João 2026)', 26, 28.5);
+      doc.text('Várzea Nova 2026, Kel controle de ponto', 26, 28.5);
 
       // Page count & date
       doc.setFont('helvetica', 'bold');
@@ -698,71 +1029,188 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
             </thead>
             <tbody className="divide-y-2 divide-dashed divide-stone-200 font-bold text-stone-705">
               {summaries.map((sum) => (
-                <tr key={sum.employee.id} className="hover:bg-bento-bg/40 transition-colors">
-                  <td className="py-4 px-4">
-                    <div>
-                      <span className="text-sm font-black text-bento-navy block">{sum.employee.fullName}</span>
-                      <span className="text-[10px] text-stone-550 mt-0.5 block">{sum.employee.phone}</span>
-                    </div>
-                  </td>
-                  <td className="py-4 px-4 font-black">
-                    <span className="px-2.5 py-1 bg-white border-2 border-bento-navy text-bento-navy rounded-lg uppercase text-[10px]">
-                      {sum.employee.role}
-                    </span>
-                  </td>
-                  <td className="py-4 px-4 text-center font-mono font-bold text-bento-navy">
-                    {sum.presentDaysCount} dia(s)
-                  </td>
-                  <td className="py-4 px-4 text-center font-mono text-bento-blue text-sm font-black">
-                    {sum.hoursWorkedDecimal}h
-                  </td>
-                  <td className="py-4 px-4 text-center font-mono">
-                    <span className={`px-2 py-1 rounded text-xs ${
-                      sum.overtimeHoursDecimal > 0 ? 'bg-bento-red/10 text-bento-red font-black border border-bento-red/35' : 'text-stone-500'
-                    }`}>
-                      {sum.overtimeHoursDecimal}h
-                    </span>
-                  </td>
-                  <td className="py-4 px-4 text-center font-mono">
-                    <span className={`px-2 py-1 rounded text-xs ${
-                      sum.delayCount > 0 ? 'bg-bento-yellow/20 text-bento-navy font-black border border-bento-yellow/50' : 'text-stone-500'
-                    }`}>
-                      {sum.delayCount}
-                    </span>
-                  </td>
-                  <td className="py-4 px-4">
-                    {sum.delays.length > 0 ? (
-                      <div className="flex flex-col gap-1 max-w-[240px]">
-                        {sum.delays.map((del, id) => (
-                          <span key={id} className="inline-flex flex-wrap items-center gap-1 text-[10px] bg-bento-red/5 text-bento-red border border-bento-red/20 px-1.5 py-0.5 rounded font-mono font-medium leading-none">
-                            <strong>{del.date.split('-').reverse().slice(0, 2).join('/')}</strong>: 
-                            <span className="font-extrabold">{del.delayMinutes} min</span>
-                            <span className="text-[9px] text-stone-500 font-sans">(Escala: {del.scheduledTime})</span>
-                          </span>
-                        ))}
+                <React.Fragment key={sum.employee.id}>
+                  <tr 
+                    onClick={() => setExpandedEmployeeId(expandedEmployeeId === sum.employee.id ? null : sum.employee.id)}
+                    className="hover:bg-bento-bg/40 transition-colors cursor-pointer select-none"
+                  >
+                    <td className="py-4 px-4">
+                      <div className="flex items-center space-x-2">
+                        <ChevronDown className={`w-4 h-4 text-stone-400 transition-transform flex-shrink-0 ${
+                          expandedEmployeeId === sum.employee.id ? 'rotate-180 text-bento-red font-black' : ''
+                        }`} />
+                        <div>
+                          <span className="text-sm font-black text-bento-navy block">{sum.employee.fullName}</span>
+                          <span className="text-[10px] text-stone-550 mt-0.5 block">{sum.employee.phone}</span>
+                        </div>
                       </div>
-                    ) : (
-                      <span className="text-[11px] text-stone-400 font-medium italic">Sem atrasos</span>
-                    )}
-                  </td>
-                  <td className="py-4 px-4 text-center font-mono">
-                    <span className={`px-2 py-1 rounded text-xs ${
-                      sum.absenceCount > 0 ? 'bg-bento-bg border border-stone-200 text-stone-400 font-bold' : 'text-stone-500'
-                    }`}>
-                      {sum.absenceCount}
-                    </span>
-                  </td>
-                </tr>
+                    </td>
+                    <td className="py-4 px-4 font-black">
+                      <span className="px-2.5 py-1 bg-white border-2 border-bento-navy text-bento-navy rounded-lg uppercase text-[10px]">
+                        {sum.employee.role}
+                      </span>
+                    </td>
+                    <td className="py-4 px-4 text-center font-mono font-bold text-bento-navy">
+                      {sum.presentDaysCount} dia(s)
+                    </td>
+                    <td className="py-4 px-4 text-center font-mono text-bento-blue text-sm font-black">
+                      {sum.hoursWorkedDecimal}h
+                    </td>
+                    <td className="py-4 px-4 text-center font-mono">
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        sum.overtimeHoursDecimal > 0 ? 'bg-bento-red/10 text-bento-red font-black border border-bento-red/35' : 'text-stone-500'
+                      }`}>
+                        {sum.overtimeHoursDecimal}h
+                      </span>
+                    </td>
+                    <td className="py-4 px-4 text-center font-mono">
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        sum.delayCount > 0 ? 'bg-bento-yellow/20 text-bento-navy font-black border border-bento-yellow/50' : 'text-stone-500'
+                      }`}>
+                        {sum.delayCount}
+                      </span>
+                    </td>
+                    <td className="py-4 px-4">
+                      {sum.delays.length > 0 ? (
+                        <div className="flex flex-col gap-1 max-w-[240px]">
+                          {sum.delays.map((del, id) => (
+                            <span key={id} className="inline-flex flex-wrap items-center gap-1 text-[10px] bg-bento-red/5 text-bento-red border border-bento-red/20 px-1.5 py-0.5 rounded font-mono font-medium leading-none">
+                              <strong>{del.date.split('-').reverse().slice(0, 2).join('/')}</strong>: 
+                              <span className="font-extrabold">{del.delayMinutes} min</span>
+                              <span className="text-[9px] text-stone-500 font-sans">(Escala: {del.scheduledTime})</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-stone-400 font-medium italic">Sem atrasos</span>
+                      )}
+                    </td>
+                    <td className="py-4 px-4 text-center font-mono">
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        sum.absenceCount > 0 ? 'bg-bento-bg border border-stone-200 text-stone-400 font-bold' : 'text-stone-500'
+                      }`}>
+                        {sum.absenceCount}
+                      </span>
+                    </td>
+                  </tr>
+
+                  {expandedEmployeeId === sum.employee.id && (
+                    <tr className="bg-stone-50/55">
+                      <td colSpan={8} className="p-4 border-l-4 border-bento-red">
+                        <div className="space-y-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b-2 border-dashed border-stone-200 pb-2 mb-2">
+                            <span className="text-xs font-black uppercase text-bento-navy tracking-wider flex items-center gap-1.5">
+                              <Clock className="w-4 h-4 text-bento-red animate-pulse" />
+                              <span>Detalhamento Diário das Horas e Espelho de Ponto</span>
+                            </span>
+                            <span className="text-[9px] text-stone-500 font-extrabold font-mono uppercase">
+                              Clique no cabeçalho ou nome do profissional para recolher
+                            </span>
+                          </div>
+                          
+                          {/* Individual Cumulative Summary Badges */}
+                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 bg-[#FEF9EC] p-3 rounded-2xl border-2 border-bento-navy">
+                            <div className="bg-white p-2.5 rounded-xl border border-bento-navy text-center shadow-[1.5px_1.5px_0_#1d1b20]">
+                              <span className="text-[8.5px] text-stone-500 font-extrabold uppercase block leading-none mb-1">Horas Trabalhadas</span>
+                              <span className="text-[13px] font-mono font-black text-bento-blue">{sum.hoursWorkedDecimal.toFixed(1)}h</span>
+                            </div>
+                            <div className="bg-white p-2.5 rounded-xl border border-bento-navy text-center shadow-[1.5px_1.5px_0_#1d1b20]">
+                              <span className="text-[8.5px] text-stone-500 font-extrabold uppercase block leading-none mb-1">Horas Extras</span>
+                              <span className="text-[13px] font-mono font-black text-bento-red">{sum.overtimeHoursDecimal.toFixed(1)}h</span>
+                            </div>
+                            <div className="bg-white p-2.5 rounded-xl border border-bento-navy text-center shadow-[1.5px_1.5px_0_#1d1b20]">
+                              <span className="text-[8.5px] text-stone-500 font-extrabold uppercase block leading-none mb-1">Atrasos de Turno</span>
+                              <span className="text-[13px] font-mono font-black text-bento-navy">{sum.delayCount}</span>
+                            </div>
+                            <div className="bg-white p-2.5 rounded-xl border border-bento-navy text-center shadow-[1.5px_1.5px_0_#1d1b20]">
+                              <span className="text-[8.5px] text-stone-500 font-extrabold uppercase block leading-none mb-1">Faltas Registradas</span>
+                              <span className="text-[13px] font-mono font-black text-stone-400">{sum.absenceCount}</span>
+                            </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 pt-1">
+                            {sum.dailyLogs.map((log) => {
+                              const dateFormatted = log.date.split('-').reverse().join('/');
+                              const hasWorked = log.hoursWorked > 0;
+                              return (
+                                <div key={log.date} className="bg-white border-2 border-bento-navy p-3.5 rounded-2xl flex flex-col justify-between shadow-[2px_2px_0px_rgba(29,27,32,1)] hover:translate-y-[-1px] hover:shadow-[3px_3px_0px_rgba(29,27,32,1)] transition-all">
+                                  <div className="flex justify-between items-center pb-2 border-b border-dashed border-stone-100 mb-2">
+                                    <span className="text-xs font-black text-bento-navy">{dateFormatted}</span>
+                                    <span className="text-[9px] px-2 py-0.5 bg-bento-bg text-stone-700 rounded-md font-extrabold max-w-[150px] truncate border border-stone-200">
+                                      Escala: {log.scheduledTime}
+                                    </span>
+                                  </div>
+                                  
+                                  <div className="grid grid-cols-4 gap-1.5 text-center my-1.5">
+                                    <div className="p-1 bg-sky-50/50 rounded-lg border border-sky-100/80">
+                                      <span className="text-[7.5px] text-stone-400 font-extrabold uppercase block leading-none mb-1">Entrada</span>
+                                      <span className="text-[10.5px] font-mono font-black text-sky-700 leading-none">{log.entrada}</span>
+                                    </div>
+                                    <div className="p-1 bg-amber-50/50 rounded-lg border border-amber-100/85">
+                                      <span className="text-[7.5px] text-stone-400 font-extrabold uppercase block leading-none mb-1">S. Int.</span>
+                                      <span className="text-[10.5px] font-mono font-black text-amber-700 leading-none">{log.saidaIntervalo}</span>
+                                    </div>
+                                    <div className="p-1 bg-amber-50/50 rounded-lg border border-amber-100/85">
+                                      <span className="text-[7.5px] text-stone-400 font-extrabold uppercase block leading-none mb-1">R. Int.</span>
+                                      <span className="text-[10.5px] font-mono font-black text-amber-700 leading-none">{log.retornoIntervalo}</span>
+                                    </div>
+                                    <div className="p-1 bg-sky-50/50 rounded-lg border border-sky-100/80">
+                                      <span className="text-[7.5px] text-stone-400 font-extrabold uppercase block leading-none mb-1">Saída</span>
+                                      <span className="text-[10.5px] font-mono font-black text-sky-700 leading-none">{log.saida}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-2.5 pt-2 border-t border-stone-100 flex justify-between items-center text-[10px]">
+                                    <span className="text-stone-450 font-black uppercase tracking-wider text-[8px]">Horas Trabalhadas:</span>
+                                    <span className={`font-mono font-black text-xs ${hasWorked ? 'text-bento-blue' : 'text-stone-400'}`}>
+                                      {hasWorked ? `${log.hoursWorked.toFixed(1)}h` : 'Folga/Ausente'}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
 
               {summaries.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-stone-400 font-black uppercase">
+                  <td colSpan={8} className="py-12 text-center text-stone-400 font-black uppercase">
                     🍉 Nenhum profissional atende aos filtros definidos.
                   </td>
                 </tr>
               )}
             </tbody>
+            {summaries.length > 0 && (
+              <tfoot className="border-t-4 border-double border-bento-navy bg-[#FEF9EC] text-bento-navy font-black">
+                <tr>
+                  <td className="py-3.5 px-4 font-black text-xs uppercase">Total Geral</td>
+                  <td className="py-3.5 px-4"></td>
+                  <td className="py-3.5 px-4 text-center font-mono text-xs">
+                    {summaries.reduce((acc, curr) => acc + curr.presentDaysCount, 0)} dia(s)
+                  </td>
+                  <td className="py-3.5 px-4 text-center font-mono text-bento-blue text-sm font-black">
+                    {totalHoursWorkedAll.toFixed(1)}h
+                  </td>
+                  <td className="py-3.5 px-4 text-center font-mono text-bento-red text-xs font-black">
+                    {totalOvertimeAll.toFixed(1)}h
+                  </td>
+                  <td className="py-3.5 px-4 text-center font-mono text-xs text-bento-navy">
+                    {totalDelaysAll}
+                  </td>
+                  <td className="py-3.5 px-4 text-[10px] text-stone-500 font-bold uppercase">
+                    Soma Consolidada da Equipe
+                  </td>
+                  <td className="py-3.5 px-4 text-center font-mono text-xs font-black">
+                    {totalAbsencesAll}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
@@ -884,6 +1332,20 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
                       </tr>
                     ))}
                   </tbody>
+                  {summaries.length > 0 && (
+                    <tfoot className="border-t-2 border-bento-navy bg-[#FEF9EC] font-black">
+                      <tr className="font-extrabold text-[#1d1b20]">
+                        <td className="py-2.5 pr-2 font-black text-xs uppercase truncate">TOTAL GERAL</td>
+                        <td className="py-2.5 pr-2"></td>
+                        <td className="py-2.5 pr-2 text-center font-mono font-bold text-xs">{summaries.reduce((acc, curr) => acc + curr.presentDaysCount, 0)}</td>
+                        <td className="py-2.5 pr-2 text-center font-mono font-black text-bento-blue text-xs">{totalHoursWorkedAll.toFixed(1)}h</td>
+                        <td className="py-2.5 pr-2 text-center font-mono text-xs">{totalOvertimeAll.toFixed(1)}h</td>
+                        <td className="py-2.5 pr-2 text-center font-mono text-xs text-bento-red">{totalDelaysAll}</td>
+                        <td className="py-2.5 pr-2 text-[9px] text-stone-500 font-bold uppercase truncate">Soma consolidada</td>
+                        <td className="py-2.5 text-center font-mono text-xs">{totalAbsencesAll}</td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
 
@@ -1012,6 +1474,28 @@ export default function ReportGenerator({ employees, records, schedules }: Repor
               </tr>
             ))}
           </tbody>
+          {summaries.length > 0 && (
+            <tfoot className="border-t-2 border-stone-800 bg-stone-100 font-black">
+              <tr className="font-extrabold text-stone-900">
+                <td className="py-2.5 px-1.5 border border-stone-300 font-extrabold text-[10px] uppercase">TOTAL GERAL</td>
+                <td className="py-2.5 px-1.5 border border-stone-300"></td>
+                <td className="py-2.5 px-1.5 border border-stone-300 text-center font-mono font-bold text-[10px]">
+                  {summaries.reduce((acc, curr) => acc + curr.presentDaysCount, 0)}
+                </td>
+                <td className="py-2.5 px-1.5 border border-stone-300 text-center font-mono font-extrabold text-[10px]">
+                  {totalHoursWorkedAll.toFixed(1)}h
+                </td>
+                <td className="py-2.5 px-1.5 border border-stone-300 text-center font-mono text-[10px]">
+                  {totalOvertimeAll.toFixed(1)}h
+                </td>
+                <td className="py-2.5 px-1.5 border border-stone-300 text-center font-mono font-bold text-[10px]">
+                  {totalDelaysAll}
+                </td>
+                <td className="py-2.5 px-1.5 border border-stone-300 text-[8px] text-stone-500 font-bold uppercase truncate">Soma consolidada</td>
+                <td className="py-2.5 px-1.5 border border-stone-300 text-center font-mono text-[10px]">{totalAbsencesAll}</td>
+              </tr>
+            </tfoot>
+          )}
         </table>
 
         {/* General notes & Signatures */}

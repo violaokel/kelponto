@@ -46,6 +46,7 @@ export default function TimeClock({
   const [editingTime, setEditingTime] = useState<string>('');
   const [editingType, setEditingType] = useState<TimeRecordType>('Entrada');
   const [adjustmentReason, setAdjustmentReason] = useState<string>('');
+  const [deletingRecord, setDeletingRecord] = useState<TimeRecord | null>(null);
 
   // Local success messages feedback
   const [statusMessage, setStatusMessage] = useState<{ text: string; success: boolean } | null>(null);
@@ -202,9 +203,13 @@ export default function TimeClock({
   };
 
   const confirmDeleteRecord = (rec: TimeRecord) => {
-    const confirm = window.confirm(`Atenção: Tem certeza de que deseja excluir o registro de ponto [${rec.type} às ${rec.time}]? Esta alteração será registrada.`);
-    if (confirm) {
-      onDeleteRecord(rec.id);
+    setDeletingRecord(rec);
+  };
+
+  const handleExecuteDelete = () => {
+    if (deletingRecord) {
+      onDeleteRecord(deletingRecord.id);
+      setDeletingRecord(null);
       setStatusMessage({
         text: 'Registro de ponto excluído com sucesso!',
         success: true
@@ -637,6 +642,69 @@ export default function TimeClock({
               </div>
 
             </form>
+
+          </div>
+        </div>
+      )}
+
+      {/* Delete Record Confirmation Modal */}
+      {deletingRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-bento-navy/70 backdrop-blur-md">
+          <div className="w-full max-w-md bg-white border-2 border-b-8 border-r-8 border-bento-navy rounded-[40px] p-6 shadow-[8px_8px_0_#1d1b20] relative text-bento-navy animate-fade-in font-sans">
+            
+            <button
+              onClick={() => setDeletingRecord(null)}
+              className="absolute top-5 right-5 p-1.5 bg-bento-bg border-2 border-bento-navy text-bento-navy hover:text-bento-red rounded-full cursor-pointer hover:scale-105 transition-transform flex items-center justify-center"
+            >
+              <XIcon />
+            </button>
+
+            <h3 className="text-md font-display font-black text-bento-navy uppercase tracking-wide flex items-center space-x-2">
+              <Trash2 className="w-5 h-5 text-bento-red animate-bounce" />
+              <span>Confirmar Exclusão</span>
+            </h3>
+            <p className="text-xs text-stone-600 font-medium mt-1">
+              Atenção: Esta alteração será registrada no histórico de auditoria e sincronizada com o banco de dados.
+            </p>
+
+            <div className="mt-5 space-y-3.5 bg-bento-bg/50 p-4 rounded-2xl border-2 border-dashed border-bento-navy/20">
+              <div className="text-xs uppercase tracking-wider font-extrabold text-stone-500">Detalhes do Registro a deletar:</div>
+              <div className="space-y-1">
+                <span className="block text-xs font-black text-bento-navy uppercase">Profissional</span>
+                <span className="block text-sm font-black text-bento-red uppercase">
+                  {employees.find(e => e.id === deletingRecord.employeeId)?.fullName || 'Desconhecido'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="block text-[10px] font-black text-bento-navy uppercase tracking-widest leading-none mb-1">Tipo de Ponto</span>
+                  <span className="inline-block px-2.5 py-1 bg-white border-2 border-bento-navy text-bento-navy rounded-lg uppercase text-[10px] font-black">{deletingRecord.type}</span>
+                </div>
+                <div>
+                  <span className="block text-[10px] font-black text-bento-navy uppercase tracking-widest leading-none mb-1">Data / Horário</span>
+                  <span className="text-xs font-mono font-black text-bento-navy block">
+                    {deletingRecord.date.split('-').reverse().join('/')} às <strong className="text-bento-blue text-sm">{deletingRecord.time}</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-5 mt-4 border-t-2 border-dashed border-stone-200">
+              <button
+                type="button"
+                onClick={() => setDeletingRecord(null)}
+                className="flex-1 py-3 px-4 bg-bento-bg text-bento-navy hover:bg-stone-100 font-black rounded-xl text-xs cursor-pointer border-2 border-bento-navy uppercase tracking-wider shadow-[2px_2px_0px_#1D1B20]"
+              >
+                Cancelar
+              </button>
+              <button
+                id="btn-execute-record-delete"
+                onClick={handleExecuteDelete}
+                className="flex-grow py-3 px-6 bg-bento-red text-white hover:bg-[#b00321] font-black rounded-xl text-xs shadow-md cursor-pointer border-b-4 border-r-4 border-bento-dark uppercase tracking-wider"
+              >
+                Sim, Excluir Registro
+              </button>
+            </div>
 
           </div>
         </div>
